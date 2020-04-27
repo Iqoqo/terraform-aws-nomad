@@ -163,8 +163,8 @@ function create_nomad_install_paths {
 function install_binaries {
   local readonly environment="$1"
   local readonly version="$2"
-  local readonly path="$2"
-  local readonly username="$3"
+  local readonly path="$3"
+  local readonly username="$4"
   local url="https://s3-us-west-2.amazonaws.com/disco.nomad.$environment/latest/nomad_latest_linux_amd64"
   if [[ "${var.environment}" == "production" ]]; then
     url="https://s3-us-west-2.amazonaws.com/disco.nomad/latest/nomad_latest_linux_amd64"
