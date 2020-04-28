@@ -3,6 +3,8 @@
 
 set -e
 
+readonly AWS_ASG_TAG_KEY="aws:autoscaling:groupName"
+
 readonly NOMAD_CONFIG_FILE="default.hcl"
 readonly SUPERVISOR_CONFIG_PATH="/etc/supervisor/conf.d/run-nomad.conf"
 
