@@ -24,7 +24,6 @@ function print_usage {
   echo -e "  --client\t\tIf set, run in client mode. Optional. At least one of --server or --client must be set."
   echo -e "  --cluster-tag-key\tAutomatically form a cluster with Instances that have this tag key and the tag value in --cluster-tag-value. Optional."
   echo -e "  --cluster-tag-value\tAutomatically form a cluster with Instances that have the tag key in --cluster-tag-key and this tag value. Optional."
-  echo -e "  --num-servers\t\tThe number of servers to expect in the Nomad cluster. Required if --server is true."
   echo -e "  --config-dir\t\tThe path to the Nomad config folder. Optional. Default is the absolute path of '../config', relative to this script."
   echo -e "  --data-dir\t\tThe path to the Nomad data folder. Optional. Default is the absolute path of '../data', relative to this script."
   echo -e "  --bin-dir\t\tThe path to the folder with Nomad binary. Optional. Default is the absolute path of the parent folder of this script."
@@ -274,10 +273,6 @@ function run {
       --client)
         client="true"
         ;;
-      --num-servers)
-        num_servers="$2"
-        shift
-        ;;
       --config-dir)
         assert_not_empty "$key" "$2"
         config_dir="$2"
@@ -339,7 +334,7 @@ function run {
   done
 
   if [[ "$server" == "true" ]]; then
-    assert_not_empty "--num-servers" "$num_servers"
+    assert_not_empty "--cluster-tag-key" "$cluster_tag_key"
   fi
 
   if [[ "$server" == "false" && "$client" == "false" ]]; then
