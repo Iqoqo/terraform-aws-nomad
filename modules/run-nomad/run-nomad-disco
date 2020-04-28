@@ -305,12 +305,11 @@ function start_nomad {
   log_info "Reloading Supervisor config and starting Nomad"
   supervisorctl reread
   supervisorctl update
-  supervisorctl start nomad
 }
 
 function bootstrap_acl {
   log_info "Starting ACL Bootstrap Process"
-  local environment="$1"
+  local readonly environment="$1"
   /tmp/bootstrap_acl.sh ${environment}
 }
 
@@ -387,7 +386,7 @@ function run {
         ;;
       --environment)
         assert_not_empty "$key" "$2"
-        environment+=("$2")
+        environment="$2"
         shift
         ;;
       --help)
@@ -459,7 +458,7 @@ function run {
 
   generate_supervisor_config "$SUPERVISOR_CONFIG_PATH" "$config_dir" "$data_dir" "$bin_dir" "$log_dir" "$user" "$use_sudo" "${environment[@]}"
   start_nomad
-  bootstrap_acl $environment
+  bootstrap_acl "$environment"
 }
 
 run "$@"
