@@ -105,6 +105,10 @@ function get_instance_ip_address {
   lookup_path_in_instance_metadata "local-ipv4"
 }
 
+function get_instance_public_ip_address {
+  lookup_path_in_instance_metadata "public-ipv4"
+}
+
 function get_instance_id {
   lookup_path_in_instance_metadata "instance-id"
 }
@@ -202,51 +206,38 @@ function generate_nomad_config {
 
   instance_id=$(get_instance_id)
   instance_ip_address=$(get_instance_ip_address)
+  instance_public_ip_address=$(get_instance_public_ip_address)
   instance_region=$(get_instance_region)
   availability_zone=$(get_instance_availability_zone)
 
+  # For Server Mode
   local server_config=""
   if [[ "$server" == "true" ]]; then
-
-  # Auto Join config
-  local retry_join_json=""
-  if [[ -z "$cluster_tag_key" || -z "$cluster_tag_value" ]]; then
-    log_warn "Either the cluster tag key ($cluster_tag_key) or value ($cluster_tag_value) is empty. Will not automatically try to form a cluster based on EC2 tags."
-  else
-    retry_join_json=$(cat <<EOF
-server_join {
-  retry_join = ["provider=aws region=$instance_region tag_key=$cluster_tag_key tag_value=$cluster_tag_value"]
-}
-EOF
-)
-  fi
-
-  local bootstrap_expect=""
     local instance_tags=""
     local cluster_size=""
-
     instance_tags=$(get_instance_tags "$instance_id" "$instance_region")
     cluster_size=$(get_cluster_size "$instance_tags" "$instance_region")
 
-    bootstrap_expect="bootstrap_expect = $cluster_size"
-
-  # Final server config
+    # Final server config
     server_config=$(cat <<EOF
-server {
-  enabled = true
-  $retry_join_json
-  $bootstrap_expect
-}
+      server {
+        enabled = true
+        bootstrap_expect = $cluster_size
+        server_join {
+          retry_join = ["provider=aws region=$instance_region tag_key=$cluster_tag_key tag_value=$cluster_tag_value"]
+        }
+      }
 EOF
-)
+    )
   fi
 
+  # For Client Mode
   local client_config=""
   if [[ "$client" == "true" ]]; then
     client_config=$(cat <<EOF
-client {
-  enabled = true
-}
+      client {
+        enabled = true
+      }
 EOF
 )
   fi
@@ -260,7 +251,7 @@ bind_addr  = "0.0.0.0"
 
 advertise {
   http = "$instance_ip_address"
-  rpc  = "$instance_ip_address"
+  rpc  = "$instance_public_ip_address"
   serf = "$instance_ip_address"
 }
 
@@ -405,6 +396,7 @@ function run {
 
   if [[ "$server" == "true" ]]; then
     assert_not_empty "--cluster-tag-key" "$cluster_tag_key"
+    assert_not_empty "--cluster-tag-value" "$cluster_tag_key"
   fi
 
   if [[ "$server" == "false" && "$client" == "false" ]]; then
