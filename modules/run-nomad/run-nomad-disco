@@ -120,6 +120,66 @@ function assert_is_installed {
   fi
 }
 
+function get_instance_tags {
+  local -r instance_id="$1"
+  local -r instance_region="$2"
+  local tags=""
+  local count_tags=""
+
+  log_info "Looking up tags for Instance $instance_id in $instance_region"
+  for (( i=1; i<="$MAX_RETRIES"; i++ )); do
+    tags=$(aws ec2 describe-tags \
+      --region "$instance_region" \
+      --filters "Name=resource-type,Values=instance" "Name=resource-id,Values=${instance_id}")
+    count_tags=$(echo $tags | jq -r ".Tags? | length")
+    if [[ "$count_tags" -gt 0 ]]; then
+      log_info "This Instance $instance_id in $instance_region has Tags."
+      echo "$tags"
+      return
+    else
+      log_warn "This Instance $instance_id in $instance_region does not have any Tags."
+      log_warn "Will sleep for $SLEEP_BETWEEN_RETRIES_SEC seconds and try again."
+      sleep "$SLEEP_BETWEEN_RETRIES_SEC"
+    fi
+  done
+
+  log_error "Could not find Instance Tags for $instance_id in $instance_region after $MAX_RETRIES retries."
+  exit 1
+}
+
+function get_asg_size {
+  local -r asg_name="$1"
+  local -r aws_region="$2"
+  local asg_json=""
+
+  log_info "Looking up the size of the Auto Scaling Group $asg_name in $aws_region"
+  asg_json=$(aws autoscaling describe-auto-scaling-groups --region "$aws_region" --auto-scaling-group-names "$asg_name")
+  echo "$asg_json" | jq -r '.AutoScalingGroups[0].DesiredCapacity'
+}
+
+# Get the value for a specific tag from the tags JSON returned by the AWS describe-tags:
+# https://docs.aws.amazon.com/cli/latest/reference/ec2/describe-tags.html
+function get_tag_value {
+  local -r tags="$1"
+  local -r tag_key="$2"
+
+  echo "$tags" | jq -r ".Tags[] | select(.Key == \"$tag_key\") | .Value"
+}
+
+function get_cluster_size {
+  local -r instance_tags="$1"
+  local -r aws_region="$2"
+
+  local asg_name=""
+  asg_name=$(get_tag_value "$instance_tags" "$AWS_ASG_TAG_KEY")
+  if [[ -z "$asg_name" ]]; then
+    log_warn "This EC2 Instance does not appear to be part of an Auto Scaling Group, so cannot determine cluster size. Setting cluster size to 1."
+    echo 1
+  else
+    get_asg_size "$asg_name" "$aws_region"
+  fi
+}
+
 function generate_nomad_config {
   local readonly server="$1"
   local readonly client="$2"
