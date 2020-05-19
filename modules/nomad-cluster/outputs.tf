@@ -19,14 +19,13 @@ output "launch_config_name" {
 }
 
 output "iam_role_arn" {
-  value = aws_iam_role.instance_role.arn
+  value = "${element(concat(aws_iam_role.instance_role.*.arn,list("")),0)}"
 }
 
 output "iam_role_id" {
-  value = aws_iam_role.instance_role.id
+  value = "${element(concat(aws_iam_role.instance_role.*.id,list("")),0)}"
 }
 
 output "security_group_id" {
   value = aws_security_group.lc_security_group.id
 }
-
