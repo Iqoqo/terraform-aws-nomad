@@ -3,6 +3,8 @@
 
 set -e
 
+readonly AWS_ASG_TAG_KEY="aws:autoscaling:groupName"
+
 readonly NOMAD_CONFIG_FILE="default.hcl"
 readonly SYSTEMD_CONFIG_PATH="/etc/systemd/system/nomad.service"
 
@@ -11,6 +13,9 @@ readonly EC2_INSTANCE_DYNAMIC_DATA_URL="http://169.254.169.254/latest/dynamic"
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_NAME="$(basename "$0")"
+
+readonly MAX_RETRIES=30
+readonly SLEEP_BETWEEN_RETRIES_SEC=10
 
 function print_usage {
   echo
@@ -22,7 +27,8 @@ function print_usage {
   echo
   echo -e "  --server\t\tIf set, run in server mode. Optional. At least one of --server or --client must be set."
   echo -e "  --client\t\tIf set, run in client mode. Optional. At least one of --server or --client must be set."
-  echo -e "  --num-servers\t\tThe number of servers to expect in the Nomad cluster. Required if --server is true."
+  echo -e "  --cluster-tag-key\tAutomatically form a cluster with Instances that have this tag key and the tag value in --cluster-tag-value. Optional."
+  echo -e "  --cluster-tag-value\tAutomatically form a cluster with Instances that have the tag key in --cluster-tag-key and this tag value. Optional."
   echo -e "  --config-dir\t\tThe path to the Nomad config folder. Optional. Default is the absolute path of '../config', relative to this script."
   echo -e "  --data-dir\t\tThe path to the Nomad data folder. Optional. Default is the absolute path of '../data', relative to this script."
   echo -e "  --bin-dir\t\tThe path to the folder with Nomad binary. Optional. Default is the absolute path of the parent folder of this script."
@@ -30,12 +36,16 @@ function print_usage {
   echo -e "  --systemd-stderr\t\tThe StandardError option of the systemd unit.  Optional.  If not configured, uses systemd's default (inherit)."
   echo -e "  --user\t\tThe user to run Nomad as. Optional. Default is to use the owner of --config-dir."
   echo -e "  --use-sudo\t\tIf set, run the Nomad agent with sudo. By default, sudo is only used if --client is set."
-  echo -e "  --environment\t\A single environment variable in the key/value pair form 'KEY=\"val\"' to pass to Nomad as environment variable when starting it up. Repeat this option for additional variables. Optional."
+  echo -e "  --environment\t\The environment we are running on"
   echo -e "  --skip-nomad-config\tIf this flag is set, don't generate a Nomad configuration file. Optional. Default is false."
   echo
   echo "Example:"
   echo
   echo "  run-nomad --server --config-dir /custom/path/to/nomad/config"
+}
+
+function get_instance_public_ip_address {
+  lookup_path_in_instance_metadata "public-ipv4"
 }
 
 function log {
@@ -97,6 +107,66 @@ function lookup_path_in_instance_dynamic_data {
   curl --silent --location "$EC2_INSTANCE_DYNAMIC_DATA_URL/$path/"
 }
 
+function get_instance_tags {
+  local -r instance_id="$1"
+  local -r instance_region="$2"
+  local tags=""
+  local count_tags=""
+
+  log_info "Looking up tags for Instance $instance_id in $instance_region"
+  for (( i=1; i<="$MAX_RETRIES"; i++ )); do
+    tags=$(aws ec2 describe-tags \
+      --region "$instance_region" \
+      --filters "Name=resource-type,Values=instance" "Name=resource-id,Values=${instance_id}")
+    count_tags=$(echo $tags | jq -r ".Tags? | length")
+    if [[ "$count_tags" -gt 0 ]]; then
+      log_info "This Instance $instance_id in $instance_region has Tags."
+      echo "$tags"
+      return
+    else
+      log_warn "This Instance $instance_id in $instance_region does not have any Tags."
+      log_warn "Will sleep for $SLEEP_BETWEEN_RETRIES_SEC seconds and try again."
+      sleep "$SLEEP_BETWEEN_RETRIES_SEC"
+    fi
+  done
+
+  log_error "Could not find Instance Tags for $instance_id in $instance_region after $MAX_RETRIES retries."
+  exit 1
+}
+
+function get_asg_size {
+  local -r asg_name="$1"
+  local -r aws_region="$2"
+  local asg_json=""
+
+  log_info "Looking up the size of the Auto Scaling Group $asg_name in $aws_region"
+  asg_json=$(aws autoscaling describe-auto-scaling-groups --region "$aws_region" --auto-scaling-group-names "$asg_name")
+  echo "$asg_json" | jq -r '.AutoScalingGroups[0].DesiredCapacity'
+}
+
+# Get the value for a specific tag from the tags JSON returned by the AWS describe-tags:
+# https://docs.aws.amazon.com/cli/latest/reference/ec2/describe-tags.html
+function get_tag_value {
+  local -r tags="$1"
+  local -r tag_key="$2"
+
+  echo "$tags" | jq -r ".Tags[] | select(.Key == \"$tag_key\") | .Value"
+}
+
+function get_cluster_size {
+  local -r instance_tags="$1"
+  local -r aws_region="$2"
+
+  local asg_name=""
+  asg_name=$(get_tag_value "$instance_tags" "$AWS_ASG_TAG_KEY")
+  if [[ -z "$asg_name" ]]; then
+    log_warn "This EC2 Instance does not appear to be part of an Auto Scaling Group, so cannot determine cluster size. Setting cluster size to 1."
+    echo 1
+  else
+    get_asg_size "$asg_name" "$aws_region"
+  fi
+}
+
 function get_instance_ip_address {
   lookup_path_in_instance_metadata "local-ipv4"
 }
@@ -125,9 +195,6 @@ function assert_is_installed {
 function generate_nomad_config {
   local readonly server="$1"
   local readonly client="$2"
-  local readonly num_servers="$3"
-  local readonly config_dir="$4"
-  local readonly user="$5"
   local readonly config_path="$config_dir/$NOMAD_CONFIG_FILE"
 
   local instance_id=""
@@ -137,26 +204,38 @@ function generate_nomad_config {
 
   instance_id=$(get_instance_id)
   instance_ip_address=$(get_instance_ip_address)
+  instance_public_ip_address=$(get_instance_public_ip_address)
   instance_region=$(get_instance_region)
   availability_zone=$(get_instance_availability_zone)
 
+  # For Server Mode
   local server_config=""
   if [[ "$server" == "true" ]]; then
+    local instance_tags=""
+    local cluster_size=""
+    instance_tags=$(get_instance_tags "$instance_id" "$instance_region")
+    cluster_size=$(get_cluster_size "$instance_tags" "$instance_region")
+
+    # Final server config
     server_config=$(cat <<EOF
-server {
-  enabled = true
-  bootstrap_expect = $num_servers
-}
+      server {
+        enabled = true
+        bootstrap_expect = $cluster_size
+        server_join {
+          retry_join = ["provider=aws region=$instance_region tag_key=$cluster_tag_key tag_value=$cluster_tag_value"]
+        }
+      }
 EOF
 )
   fi
 
+  # For Client Mode
   local client_config=""
   if [[ "$client" == "true" ]]; then
     client_config=$(cat <<EOF
-client {
-  enabled = true
-}
+      client {
+        enabled = true
+      }
 EOF
 )
   fi
@@ -170,7 +249,7 @@ bind_addr  = "0.0.0.0"
 
 advertise {
   http = "$instance_ip_address"
-  rpc  = "$instance_ip_address"
+  rpc  = "$instance_public_ip_address"
   serf = "$instance_ip_address"
 }
 
@@ -178,9 +257,6 @@ $client_config
 
 $server_config
 
-consul {
-  address = "127.0.0.1:8500"
-}
 EOF
   chown "$user:$user" "$config_path"
 }
@@ -195,7 +271,6 @@ function generate_systemd_config {
   local readonly nomad_user="$7"
   local readonly use_sudo="$8"
   shift 8
-  local readonly environment=("$@")
   local readonly config_path="$nomad_config_dir/$NOMAD_CONFIG_FILE"
 
   if [[ "$use_sudo" == "true" ]]; then
@@ -249,6 +324,12 @@ EOF
   echo -e "$install_config" >> "$systemd_config_path"
 }
 
+function bootstrap_acl {
+  log_info "Starting ACL Bootstrap Process"
+  local readonly environment="$1"
+  /tmp/bootstrap_acl.sh ${environment}
+}
+
 function start_nomad {
   log_info "Reloading systemd config and starting Nomad"
 
@@ -275,7 +356,7 @@ function run {
   local user=""
   local skip_nomad_config="false"
   local use_sudo=""
-  local environment=()
+  local environment=""
   local all_args=()
 
   while [[ $# > 0 ]]; do
@@ -287,10 +368,6 @@ function run {
         ;;
       --client)
         client="true"
-        ;;
-      --num-servers)
-        num_servers="$2"
-        shift
         ;;
       --config-dir)
         assert_not_empty "$key" "$2"
@@ -340,7 +417,7 @@ function run {
         ;;
       --environment)
         assert_not_empty "$key" "$2"
-        environment+=("$2")
+        environment="$2"
         shift
         ;;
       --help)
@@ -359,6 +436,8 @@ function run {
 
   if [[ "$server" == "true" ]]; then
     assert_not_empty "--num-servers" "$num_servers"
+    assert_not_empty "--cluster-tag-key" "$cluster_tag_key"
+    assert_not_empty "--cluster-tag-value" "$cluster_tag_key"
   fi
 
   if [[ "$server" == "false" && "$client" == "false" ]]; then
@@ -400,11 +479,12 @@ function run {
   if [[ "$skip_nomad_config" == "true" ]]; then
     log_info "The --skip-nomad-config flag is set, so will not generate a default Nomad config file."
   else
-    generate_nomad_config "$server" "$client" "$num_servers" "$config_dir" "$user"
+    generate_nomad_config "$server" "$client" "$cluster_tag_key" "$cluster_tag_value" "$config_dir" "$user"
   fi
 
   generate_systemd_config "$SYSTEMD_CONFIG_PATH" "$config_dir" "$data_dir" "$bin_dir" "$systemd_stdout" "$systemd_stderr" "$user" "$use_sudo" "${environment[@]}"
   start_nomad
+  bootstrap_acl "$environment"
 }
 
 run "$@"

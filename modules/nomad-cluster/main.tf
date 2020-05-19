@@ -59,7 +59,7 @@ resource "aws_launch_configuration" "launch_configuration" {
   instance_type = var.instance_type
   user_data     = var.user_data
 
-  iam_instance_profile = aws_iam_instance_profile.instance_profile.name
+  iam_instance_profile = var.enable_iam_setup ? aws_iam_instance_profile.instance_profile.name: var.iam_instance_profile_name
   key_name             = var.ssh_key_name
 
   security_groups = concat(
@@ -161,6 +161,7 @@ module "security_group_rules" {
 # ---------------------------------------------------------------------------------------------------------------------
 
 resource "aws_iam_instance_profile" "instance_profile" {
+  count       = var.enable_iam_setup
   name_prefix = var.cluster_name
   path        = var.instance_profile_path
   role        = aws_iam_role.instance_role.name
@@ -174,6 +175,7 @@ resource "aws_iam_instance_profile" "instance_profile" {
 }
 
 resource "aws_iam_role" "instance_role" {
+  count              = var.enable_iam_setup
   name_prefix        = var.cluster_name
   assume_role_policy = data.aws_iam_policy_document.instance_role.json
 
@@ -186,6 +188,7 @@ resource "aws_iam_role" "instance_role" {
 }
 
 data "aws_iam_policy_document" "instance_role" {
+  count     = var.enable_iam_setup
   statement {
     effect  = "Allow"
     actions = ["sts:AssumeRole"]

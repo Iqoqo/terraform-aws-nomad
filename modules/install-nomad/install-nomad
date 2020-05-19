@@ -27,13 +27,32 @@ function print_usage {
   echo
   echo "Options:"
   echo
+  echo -e "  --environment\t\tThe environment to download the binary from. Required."
   echo -e "  --version\t\tThe version of Nomad to install. Required."
   echo -e "  --path\t\tThe path where Nomad should be installed. Optional. Default: $DEFAULT_INSTALL_PATH."
   echo -e "  --user\t\tThe user who will own the Nomad install directories. Optional. Default: $DEFAULT_NOMAD_USER."
   echo
   echo "Example:"
   echo
-  echo "  install-nomad --version 0.5.4"
+  echo "  install-nomad --environment staging --version 0.5.4"
+}
+
+function two_way_symlink() {
+  local src="$1"
+  local dest="$2"
+
+  if [[ ! -f "$dest" ]] && [[ ! -f "$src" ]]; then
+    echo "Missing source '$src' AND destination '$dest' exiting..."
+    exit -5
+  fi
+
+  if [[ ! -f "$dest" ]]; then
+    ## Destination isn't there point it to source
+    sudo ln -s $src  $dest
+  elif [[ ! -f "$src" ]]; then
+    ## Source file was missing, point to destination.  Should ONLY do so if it doesn't already exist (e.g. hadn't already been dual linked)
+    sudo ln -s $dest $src
+  fi
 }
 
 function log {
@@ -123,19 +142,22 @@ function create_nomad_install_paths {
 }
 
 function install_binaries {
-  local readonly version="$1"
-  local readonly path="$2"
-  local readonly username="$3"
+  local readonly environment="$1"
+  local readonly version="$2"
+  local readonly path="$3"
+  local readonly username="$4"
+  local url="https://s3-us-west-2.amazonaws.com/disco.nomad.$environment/latest/nomad_latest_linux_amd64"
+  if [[ "${environment}" == "production" ]]; then
+    url="https://s3-us-west-2.amazonaws.com/disco.nomad/latest/nomad_latest_linux_amd64"
+  fi
+  local readonly download_path="/tmp/nomad"
 
-  local readonly url="https://releases.hashicorp.com/nomad/${version}/nomad_${version}_linux_amd64.zip"
-  local readonly download_path="/tmp/nomad_${version}_linux_amd64.zip"
   local readonly bin_dir="$path/bin"
   local readonly nomad_dest_path="$bin_dir/nomad"
   local readonly run_nomad_dest_path="$bin_dir/run-nomad"
 
   log_info "Downloading Nomad $version from $url to $download_path"
   curl -o "$download_path" "$url"
-  unzip -d /tmp "$download_path"
 
   log_info "Moving Nomad binary to $nomad_dest_path"
   sudo mv "/tmp/nomad" "$nomad_dest_path"
@@ -157,6 +179,7 @@ function install_binaries {
 }
 
 function install {
+  local environment=""
   local version=""
   local path="$DEFAULT_INSTALL_PATH"
   local user="$DEFAULT_NOMAD_USER"
@@ -165,6 +188,10 @@ function install {
     local key="$1"
 
     case "$key" in
+      --environment)
+        environment="$2"
+        shift
+        ;;
       --version)
         version="$2"
         shift
@@ -191,6 +218,7 @@ function install {
     shift
   done
 
+  assert_not_empty "--environment" "$environment"
   assert_not_empty "--version" "$version"
   assert_not_empty "--path" "$path"
   assert_not_empty "--user" "$user"
@@ -200,7 +228,7 @@ function install {
   install_dependencies
   create_nomad_user "$user"
   create_nomad_install_paths "$path" "$user"
-  install_binaries "$version" "$path" "$user"
+  install_binaries "$environment" "$version" "$path" "$user"
 
   log_info "Nomad install complete!"
 }
