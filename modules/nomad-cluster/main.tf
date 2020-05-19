@@ -188,7 +188,6 @@ resource "aws_iam_role" "instance_role" {
 }
 
 data "aws_iam_policy_document" "instance_role" {
-  count     = var.enable_iam_setup ? 1: 0
   statement {
     effect  = "Allow"
     actions = ["sts:AssumeRole"]
