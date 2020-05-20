@@ -347,7 +347,6 @@ function get_owner_of_path {
 function run {
   local server="false"
   local client="false"
-  local num_servers=""
   local config_dir=""
   local data_dir=""
   local bin_dir=""
@@ -435,7 +434,6 @@ function run {
   done
 
   if [[ "$server" == "true" ]]; then
-    assert_not_empty "--num-servers" "$num_servers"
     assert_not_empty "--cluster-tag-key" "$cluster_tag_key"
     assert_not_empty "--cluster-tag-value" "$cluster_tag_key"
   fi
