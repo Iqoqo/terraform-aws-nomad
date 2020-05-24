@@ -327,7 +327,7 @@ EOF
 function bootstrap_acl {
   log_info "Starting ACL Bootstrap Process"
   local readonly environment="$1"
-  /tmp/bootstrap_acl.sh ${environment}
+  /tmp/bootstrap_acl.sh --environment ${environment}
 }
 
 function start_nomad {
