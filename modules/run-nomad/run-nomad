@@ -325,8 +325,11 @@ EOF
 }
 
 function bootstrap_acl {
+  sleep 30
   log_info "Starting ACL Bootstrap Process"
   local readonly environment="$1"
+  instance_region=$(get_instance_region)
+  export AWS_DEFAULT_REGION=$instance_region
   /tmp/bootstrap_acl.sh --environment ${environment}
 }
 
